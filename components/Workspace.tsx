@@ -10,12 +10,20 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { uploadAssetToR2 } from '@/lib/r2/smartUpload';
+import { IS_STANDALONE } from '@/lib/mode';
+import {
+  listNodes, createNode, deleteNode,
+  listComments, createComment, updateComment, deleteComment,
+  getActiveShareLink, createShareLink, revokeShareLink,
+} from '@/lib/actions/workspace';
 import { useVideoThumbnails } from '@/hooks/useVideoThumbnails';
 import { Badge, Modal, ConfirmDialog } from '@/components/ui';
 import type { User, CinematicWorkflow, CinematicNode, CinematicComment } from '@/types';
 
-// One browser Supabase client for the whole module. The client pins the
-// `cinematic_workflow` schema, so every .from() below uses bare table names.
+// All reads and writes go through server actions (lib/actions/workspace.ts) so
+// they work in embedded mode, where the browser has no Supabase session. This
+// browser client is kept for ONE thing: the realtime comments channel, which
+// needs a live socket and only runs in standalone (see the guard below).
 const supabase = createClient();
 
 // Spatial pin ({x,y}) plus an optional drawn rectangle in x1/y1/x2/y2 percent —
@@ -199,24 +207,15 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
   const handleGenerateGuestLink = async () => {
     if (!workflow?.id) return;
     setIsGeneratingGuestLink(true);
-    const { data: existing } = await supabase
-      .from('share_links')
-      .select('id')
-      .eq('resource_id', workflow.id)
-      .eq('created_by', user.id)
-      .eq('is_active', true)
-      .single();
-    const linkId = existing?.id ?? (await supabase
-      .from('share_links')
-      .insert({ resource_id: workflow.id, created_by: user.id })
-      .select('id')
-      .single()
-    ).data?.id;
-    if (linkId) {
-      const url = `${window.location.origin}/share/${linkId}`;
-      setGuestLinkUrl(url);
+    try {
+      const existing = await getActiveShareLink(workflow.id);
+      const linkId = existing?.id ?? (await createShareLink(workflow.id)).id;
+      if (linkId) setGuestLinkUrl(`${window.location.origin}/share/${linkId}`);
+    } catch (err: any) {
+      alert(err?.message ?? 'Could not create a share link.');
+    } finally {
+      setIsGeneratingGuestLink(false);
     }
-    setIsGeneratingGuestLink(false);
   };
 
   const handleCopyGuestLink = () => {
@@ -229,7 +228,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
   const handleRevokeGuestLink = async () => {
     if (!guestLinkUrl || !workflow?.id) return;
     const token = guestLinkUrl.split('/share/')[1];
-    await supabase.from('share_links').update({ is_active: false }).eq('id', token);
+    await revokeShareLink(token);
     setGuestLinkUrl(null);
   };
 
@@ -244,6 +243,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
 
   useEffect(() => {
     if (!workflow?.id) return;
+    // Realtime needs a live Supabase socket authenticated by a session — which
+    // only exists in standalone. In embedded mode there is no session, so we skip
+    // it and rely on optimistic updates from the server actions instead.
+    if (!IS_STANDALONE) return;
     const channel = supabase.channel(`cinematic_comments_${workflow.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'cinematic_workflow', table: 'comments' }, (payload) => {
          if (activeNodeId && (payload.new as any).node_id === activeNodeId) fetchComments(activeNodeId);
@@ -385,15 +388,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
     setLoading(true);
     setVideoError(null);
     try {
-      const { data, error } = await supabase
-        .from('nodes')
-        .select('*')
-        .eq('workflow_id', workflow.id)
-        .order('created_at', { ascending: true });
+      const data = await listNodes(workflow.id);
 
-      if (error) throw error;
-
-      if (data && data.length > 0) {
+      if (data.length > 0) {
         setNodes(data);
         if (!activeNodeId) setActiveNodeId(data[data.length - 1].id);
       } else {
@@ -408,22 +405,19 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
   };
 
   const fetchComments = async (nodeId: string) => {
-    const { data } = await supabase
-      .from('comments')
-      .select('*, profiles(full_name, avatar_url)')
-      .eq('node_id', nodeId)
-      .order('timestamp_seconds', { ascending: true });
-
-    if (data) setComments(data as any);
+    try {
+      setComments(await listComments(nodeId) as any);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const fetchCompareComments = async (nodeId: string) => {
-    const { data } = await supabase
-      .from('comments')
-      .select('*, profiles(full_name, avatar_url)')
-      .eq('node_id', nodeId)
-      .order('timestamp_seconds', { ascending: true });
-    if (data) setCompareComments(data as any);
+    try {
+      setCompareComments(await listComments(nodeId) as any);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const getStreamUrl = (url: string) => {
@@ -509,7 +503,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
     }
     if (newAttachmentUrl !== undefined) patch.attachment_url = newAttachmentUrl;
 
-    await supabase.from('comments').update(patch).eq('id', commentId);
+    try {
+      await updateComment(commentId, patch as { content?: string; attachment_url?: string | null });
+    } catch (err: any) {
+      alert('Failed to save changes: ' + (err?.message ?? err));
+      return;
+    }
     setComments(prev => prev.map(x => x.id === commentId
       ? { ...x, content: text, ...(newAttachmentUrl !== undefined ? { attachment_url: newAttachmentUrl } : {}) }
       : x));
@@ -557,25 +556,24 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
         return;
       }
     }
-    const payload = {
-      node_id: activeNode.id,
-      user_id: user.id,
-      content: text,
-      timestamp_seconds: parent.timestamp_seconds,
-      annotation: null,
-      attachment_url: uploadedUrl,
-      parent_id: parent.id,
-    };
-    const { data, error } = await supabase.from('comments').insert(payload).select('*, profiles(full_name, avatar_url)').single();
-    if (!error && data) {
+    try {
+      const data = await createComment({
+        node_id: activeNode.id,
+        content: text,
+        timestamp_seconds: parent.timestamp_seconds,
+        annotation: null,
+        attachment_url: uploadedUrl,
+        parent_id: parent.id,
+      });
       setComments(prev => [...prev, data as any].sort((a, b) => a.timestamp_seconds - b.timestamp_seconds));
       setReplyTexts(prev => ({ ...prev, [parent.id]: '' }));
       setReplyAttachments(prev => ({ ...prev, [parent.id]: null }));
       setExpandedReplyId(null);
-    } else if (error) {
-      alert('Reply failed: ' + error.message);
+    } catch (err: any) {
+      alert('Reply failed: ' + (err?.message ?? err));
+    } finally {
+      setSubmittingReplyId(null);
     }
-    setSubmittingReplyId(null);
   };
 
   const handlePopoverDragStart = (e: React.MouseEvent) => {
@@ -665,23 +663,16 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
     // A finalized spatial range (start + end captured) posts as a range marker anchored
     // at its start coordinate; otherwise it's a normal point annotation at the playhead.
     const isRange = !!pendingRange && pendingRange.end != null;
-    const payload = {
+
+    try {
+      const data = await createComment({
         node_id: targetNodeId,
-        user_id: user.id,
         content: newComment.trim(),
         timestamp_seconds: isRange ? pendingRange!.start : targetTimestamp,
         end_seconds: isRange ? pendingRange!.end : null,
         annotation: isRange ? pendingRange!.startAnnotation : pendingAnnotation,
-        attachment_url: uploadedUrl
-    };
-
-    const { data, error } = await supabase
-      .from('comments')
-      .insert(payload)
-      .select('*')
-      .single();
-
-    if (!error && data) {
+        attachment_url: uploadedUrl,
+      });
       if (popoverTarget === 'active') {
           setComments(prev => [...prev, data as any].sort((a, b) => a.timestamp_seconds - b.timestamp_seconds));
       } else {
@@ -694,10 +685,11 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
       setPendingRange(null);
       setRectDraft(null);
       if (isSidebarCollapsed) setIsSidebarCollapsed(false);
-    } else if (error) {
-      alert("Failed to post comment. Error: " + error.message);
+    } catch (err: any) {
+      alert("Failed to post comment. Error: " + (err?.message ?? err));
+    } finally {
+      setIsSubmitting(false);
     }
-    setIsSubmitting(false);
   };
 
   // ── Spatial range creation (ADD ANNOTATION popup) ──────────────────────────
@@ -747,80 +739,68 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
     // Range marker: when a start (and end) has been captured, anchor the marker at the
     // start and store the segment end. Otherwise it's a normal point marker at the playhead.
     const hasRange = rangeStart != null && rangeEnd != null && rangeEnd > rangeStart;
-    const payload = {
+
+    try {
+      const data = await createComment({
         node_id: activeNode.id,
-        user_id: user.id,
         content: globalComment.trim(),
         timestamp_seconds: rangeStart != null ? rangeStart : (videoRef.current?.currentTime || 0),
         end_seconds: hasRange ? rangeEnd : null,
         annotation: null,
-        attachment_url: uploadedUrl
-    };
-
-    const { data, error } = await supabase
-      .from('comments')
-      .insert(payload)
-      .select('*')
-      .single();
-
-    if (!error && data) {
+        attachment_url: uploadedUrl,
+      });
       setComments(prev => [...prev, data as any].sort((a, b) => a.timestamp_seconds - b.timestamp_seconds));
       setGlobalComment('');
       setGlobalAttachmentFile(null);
       setRangeStart(null);
       setRangeEnd(null);
-    } else if (error) {
-      alert("Failed to post general comment. Error: " + error.message);
+    } catch (err: any) {
+      alert("Failed to post general comment. Error: " + (err?.message ?? err));
+    } finally {
+      setIsSubmittingGlobal(false);
     }
-    setIsSubmittingGlobal(false);
   };
 
   const handlePostCompareGlobalComment = async () => {
     if (!compareNodeId || !compareGlobalComment.trim()) return;
     setIsSubmittingCompareComment(true);
-    const payload = {
-      node_id: compareNodeId,
-      user_id: user.id,
-      content: compareGlobalComment.trim(),
-      timestamp_seconds: compareVideoRef.current?.currentTime || 0,
-      annotation: null,
-      attachment_url: null
-    };
-    const { data, error } = await supabase
-      .from('comments')
-      .insert(payload)
-      .select('*')
-      .single();
-    if (!error && data) {
+    try {
+      const data = await createComment({
+        node_id: compareNodeId,
+        content: compareGlobalComment.trim(),
+        timestamp_seconds: compareVideoRef.current?.currentTime || 0,
+        annotation: null,
+        attachment_url: null,
+      });
       setCompareComments(prev => [...prev, data as any].sort((a, b) => a.timestamp_seconds - b.timestamp_seconds));
       setCompareGlobalComment('');
+    } catch (err: any) {
+      alert("Failed to post comment. Error: " + (err?.message ?? err));
+    } finally {
+      setIsSubmittingCompareComment(false);
     }
-    setIsSubmittingCompareComment(false);
   };
 
   const handleSetupNode = async () => {
     if (!videoUrlInput.trim()) return;
     setLoading(true); setVideoError(null);
-    const { data, error } = await supabase
-      .from('nodes')
-      .insert({ workflow_id: workflow.id, video_url: videoUrlInput.trim() })
-      .select().single();
-
-    if (error) { alert(error.message); setLoading(false); return; }
-    if (data) {
+    try {
+      const data = await createNode(workflow.id, videoUrlInput.trim());
       setNodes(prev => [...prev, data]);
       setActiveNodeId(data.id);
       setIsSetupMode(false);
+    } catch (err: any) {
+      alert(err?.message ?? 'Failed to add the video.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleDeleteNode = async () => {
     if (!activeNode) return;
     setLoading(true);
     try {
-      const { error } = await supabase.from('nodes').delete().eq('id', activeNode.id);
-      if (error) throw error;
+      await deleteNode(activeNode.id);
       const newNodes = nodes.filter(n => n.id !== activeNode.id);
       setNodes(newNodes);
       setActiveNodeId(newNodes.length > 0 ? newNodes[newNodes.length - 1].id : null);
@@ -1425,7 +1405,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
                                            {visibleAnnotation.user_id === user.id && editingCommentId !== visibleAnnotation.id && (
                                               <button onClick={(e) => { e.stopPropagation(); startEdit(visibleAnnotation); }} className="text-slate-400 hover:text-sky-400 p-1 rounded hover:bg-slate-800" title="Edit"><Pencil size={13}/></button>
                                            )}
-                                           <button onClick={async (e) => { e.stopPropagation(); await supabase.from('comments').delete().eq('id', visibleAnnotation.id); setComments(prev => prev.filter(x => x.id !== visibleAnnotation.id)); setFloatingHidden(true); }} className="text-slate-400 hover:text-rose-400 p-1 rounded hover:bg-slate-800" title="Delete"><Trash2 size={13}/></button>
+                                           <button onClick={async (e) => { e.stopPropagation(); await deleteComment(visibleAnnotation.id); setComments(prev => prev.filter(x => x.id !== visibleAnnotation.id)); setFloatingHidden(true); }} className="text-slate-400 hover:text-rose-400 p-1 rounded hover:bg-slate-800" title="Delete"><Trash2 size={13}/></button>
                                            <button onClick={(e) => { e.stopPropagation(); setFloatingHidden(true); }} className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800" title="Close"><X size={14}/></button>
                                         </div>
                                      </div>
@@ -1696,7 +1676,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
                                  <span title={`Range ${formatClock(c.timestamp_seconds)} – ${formatClock(c.end_seconds)}`} className="tabular-nums px-1.5 py-0.5 font-black text-[9px] tracking-widest shrink-0 rounded bg-rose-500/20 text-rose-500 border border-rose-500/40">↔ {formatClock(c.timestamp_seconds)}–{formatClock(c.end_seconds)}</span>
                               )}
                               {c.content && <p className="text-xs font-medium text-gray-600 dark:text-slate-400 italic truncate flex-1">{c.content}</p>}
-                              <button onClick={async (e) => { e.stopPropagation(); await supabase.from('comments').delete().eq('id', c.id); setComments(prev => prev.filter(x => x.id !== c.id)); }} className="p-1 text-gray-300 hover:text-rose-500 transition-all shrink-0"><Trash2 size={10}/></button>
+                              <button onClick={async (e) => { e.stopPropagation(); await deleteComment(c.id); setComments(prev => prev.filter(x => x.id !== c.id)); }} className="p-1 text-gray-300 hover:text-rose-500 transition-all shrink-0"><Trash2 size={10}/></button>
                            </div>
                         </div>
                      ))}
@@ -1733,7 +1713,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
                                  <span title={`Range ${formatClock(c.timestamp_seconds)} – ${formatClock(c.end_seconds)}`} className="tabular-nums px-1.5 py-0.5 font-black text-[9px] tracking-widest shrink-0 rounded bg-rose-500/20 text-rose-500 border border-rose-500/40">↔ {formatClock(c.timestamp_seconds)}–{formatClock(c.end_seconds)}</span>
                               )}
                                  {c.content && <p className="text-xs font-medium text-gray-600 dark:text-slate-400 italic truncate flex-1">{c.content}</p>}
-                                 <button onClick={async (e) => { e.stopPropagation(); await supabase.from('comments').delete().eq('id', c.id); setCompareComments(prev => prev.filter(x => x.id !== c.id)); }} className="p-1 text-gray-300 hover:text-rose-500 transition-all shrink-0"><Trash2 size={10}/></button>
+                                 <button onClick={async (e) => { e.stopPropagation(); await deleteComment(c.id); setCompareComments(prev => prev.filter(x => x.id !== c.id)); }} className="p-1 text-gray-300 hover:text-rose-500 transition-all shrink-0"><Trash2 size={10}/></button>
                               </div>
                            </div>
                         ))}
@@ -1803,7 +1783,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
                                 {c.user_id === user.id && (
                                    <button onClick={(e) => { e.stopPropagation(); startEdit(c); }} className="p-1 text-slate-500 hover:text-sky-400 transition-colors" title="Edit comment"><Pencil size={13}/></button>
                                 )}
-                                <button onClick={async (e) => { e.stopPropagation(); await supabase.from('comments').delete().eq('id', c.id); setComments(prev => prev.filter(x => x.id !== c.id)); }} className="p-1 text-slate-500 hover:text-rose-400 transition-colors" title="Delete comment"><Trash2 size={14}/></button>
+                                <button onClick={async (e) => { e.stopPropagation(); await deleteComment(c.id); setComments(prev => prev.filter(x => x.id !== c.id)); }} className="p-1 text-slate-500 hover:text-rose-400 transition-colors" title="Delete comment"><Trash2 size={14}/></button>
                              </div>
                           </div>
 
@@ -1960,7 +1940,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
                                       {r.user_id === user.id && (
                                          <button onClick={(e) => { e.stopPropagation(); startEdit(r); }} className="opacity-0 group-hover/reply:opacity-100 p-1 text-slate-500 hover:text-sky-400 transition-all shrink-0" title="Edit"><Pencil size={11}/></button>
                                       )}
-                                      <button onClick={async (e) => { e.stopPropagation(); await supabase.from('comments').delete().eq('id', r.id); setComments(prev => prev.filter(x => x.id !== r.id)); }} className="opacity-0 group-hover/reply:opacity-100 p-1 text-slate-500 hover:text-rose-400 transition-all shrink-0"><Trash2 size={11}/></button>
+                                      <button onClick={async (e) => { e.stopPropagation(); await deleteComment(r.id); setComments(prev => prev.filter(x => x.id !== r.id)); }} className="opacity-0 group-hover/reply:opacity-100 p-1 text-slate-500 hover:text-rose-400 transition-all shrink-0"><Trash2 size={11}/></button>
                                    </div>
                                 ))}
                              </div>
@@ -2265,19 +2245,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
 
                          setVideoUrlInput('Registering node...');
 
-                         const { data, error } = await supabase
-                           .from('nodes')
-                           .insert({ workflow_id: workflow.id, video_url: publicUrl })
-                           .select().single();
-
-                         if (error) throw error;
-
-                         if (data) {
-                           setNodes(prev => [...prev, data]);
-                           setActiveNodeId(data.id);
-                           setIsSetupMode(false);
-                           setVideoUrlInput('');
-                         }
+                         // The file is already in R2 (presigned PUT works in both
+                         // modes); recording the node goes through the server action
+                         // so it works in the iframe too.
+                         const data = await createNode(workflow.id, publicUrl);
+                         setNodes(prev => [...prev, data]);
+                         setActiveNodeId(data.id);
+                         setIsSetupMode(false);
+                         setVideoUrlInput('');
                        } catch (err: any) {
                          alert(err.message);
                          setVideoUrlInput('');

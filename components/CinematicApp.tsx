@@ -1,13 +1,11 @@
 'use client'
 
 import React, { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { getWorkflow } from '@/lib/actions/workspace'
 import type { User, CinematicWorkflow } from '@/types'
 import { WorkflowsList } from '@/components/WorkflowsList'
 import { Workspace } from '@/components/Workspace'
 import { Loader2 } from 'lucide-react'
-
-const supabase = createClient()
 
 interface Props {
   user: User
@@ -19,11 +17,13 @@ export const CinematicApp: React.FC<Props> = ({ user }) => {
 
   const handleSelectWorkflow = async (id: string) => {
     setLoadingId(id)
-    const { data } = await supabase.from('workflows').select('*').eq('id', id).single()
-    if (data) {
-      setActiveWorkflow(data as CinematicWorkflow)
+    try {
+      setActiveWorkflow(await getWorkflow(id))
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setLoadingId(null)
     }
-    setLoadingId(null)
   }
 
   if (loadingId) {
