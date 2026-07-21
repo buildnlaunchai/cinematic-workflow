@@ -1,0 +1,37 @@
+{
+  "name": "cinematic-workflow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cinematic Workflow — a Frame.io-style video review tool: versioned video nodes, timecoded / range / spatially-pinned comments, threaded replies, compare mode, and public read-only guest-share links.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "preflight": "bash scripts/preflight.sh",
+    "dist": "bash scripts/dist.sh"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.5.2",
+    "@supabase/supabase-js": "^2.45.4",
+    "jose": "^5.9.6",
+    "lucide-react": "^0.462.0",
+    "next": "^15.0.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "tailwindcss-animate": "^1.0.7",
+    "typescript": "^5.6.3"
+  }
+}

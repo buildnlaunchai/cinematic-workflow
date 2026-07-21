@@ -1,0 +1,71 @@
+# Supabase CLI config — local development and `supabase db push`.
+#
+# `project_id` is a local label for the CLI's own state, not a secret and not a
+# link to any project. `supabase link --project-ref <ref>` is what binds this
+# repo to a real project, and it stores that ref outside version control.
+project_id = "cinematic-workflow"
+
+[api]
+enabled = true
+port = 54321
+
+# `cinematic_workflow` MUST be listed here, AND in the hosted project's
+# Settings -> API -> Exposed schemas. PostgREST serves only the schemas it is
+# told about; without this the app's own tables 404 even though the migration
+# applied cleanly. This is the one manual dashboard step in the deploy guide.
+schemas = ["public", "graphql_public", "cinematic_workflow"]
+
+# `public` stays searchable so unqualified calls to built-ins resolve normally.
+# The app itself always addresses its tables through the `cinematic_workflow`
+# schema (the supabase-js client sets db.schema).
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+# Must match the Postgres version of the project you deploy to, or local
+# verification proves something about a database you do not actually run.
+# Supabase provisions new projects on 17; check yours under Settings -> Database.
+major_version = 17
+
+[studio]
+enabled = true
+port = 54323
+
+# Disabled deliberately, and it must stay disabled. The analytics stack's
+# `vector` container bind-mounts the Docker socket, which Colima's virtiofs
+# cannot serve — `supabase start` then dies with "operation not supported"
+# AFTER pulling every image, which looks like a network problem. This app
+# collects no analytics; leaving it on would also break the unattended migration
+# check in `pnpm run dist` on any Colima machine.
+[analytics]
+enabled = false
+
+[auth]
+enabled = true
+# Overridden per-deployment by env vars; these are local-dev defaults only.
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = ["http://127.0.0.1:3000"]
+jwt_expiry = 3600
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+# Local dev only: the hosted project decides its own confirmation policy.
+enable_confirmations = false
+
+# --- Edge Functions ---------------------------------------------------------
+# The two upload functions require a valid Supabase JWT in standalone mode: the
+# only callers are authenticated users minting an R2 presigned URL. verify_jwt
+# is enforced by the platform BEFORE the function body runs, which is why the
+# functions themselves keep only a light bearer-presence check.
+#
+# R2 credentials are Edge Function SECRETS, set with `supabase secrets set`
+# (see README + .env.example) — they are read via Deno.env, never bundled into
+# the app and never NEXT_PUBLIC_.
+[functions.generate-upload-url]
+verify_jwt = true
+
+[functions.r2-multipart-upload]
+verify_jwt = true
