@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Play, Pause, SkipBack, SkipForward, MessageSquare,
-  Send, Trash2, Maximize2, ArrowLeft, Loader2,
+  Send, Trash2, Maximize2, ArrowLeft, Loader2, HardDrive,
   Video, FileVideo, ShieldAlert, Plus, Minus, CheckCircle2, Check,
   X, Volume2, VolumeX, History, Paperclip, ExternalLink, Share2, Pencil,
   Download, ChevronDown, ChevronUp
@@ -38,6 +38,8 @@ interface WorkspaceProps {
   user: User;
   workflow: CinematicWorkflow;
   onBackList: () => void;
+  // null = still checking; true = a verified R2 bucket is connected; false = not.
+  storageReady?: boolean | null;
 }
 
 // Renders comment text keeping user line breaks intact and turning URLs into
@@ -65,7 +67,7 @@ const renderCommentText = (text: string) => {
   });
 };
 
-export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList }) => {
+export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList, storageReady }) => {
   const onBack = () => { if (onBackList) onBackList(); else window.history.back(); };
   const [loading, setLoading] = useState(true);
 
@@ -1209,6 +1211,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
            <button onClick={() => { setVideoUrlInput(''); setIsSetupMode(true); }} className="p-2 text-slate-400 hover:text-sky-400 transition-colors" title="Initialize Video Node">
               <Plus size={16} strokeWidth={2.5}/>
            </button>
+           <a href="/settings/storage" className="relative p-2 text-slate-400 hover:text-sky-400 transition-colors" title={storageReady === false ? 'Connect your storage' : 'Storage settings'}>
+              <HardDrive size={16} />
+              {storageReady === false && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-slate-950" />}
+           </a>
            <div className="w-8 h-8 rounded-full bg-rose-500 flex items-center justify-center text-white text-xs font-bold ml-2" title={user.full_name}>
               {user.full_name?.charAt(0).toUpperCase() || 'U'}
            </div>
@@ -2214,12 +2220,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({ user, workflow, onBackList
                   <h4 className="text-xs font-black uppercase text-indigo-500 mb-3 tracking-widest flex items-center gap-2">
                     <Video size={14} /> Option 2: Upload to Cloud Vault
                   </h4>
+                  {storageReady === false && (
+                    <a href="/settings/storage" className="mb-3 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-300 hover:bg-amber-500/15 transition-colors">
+                      <HardDrive size={13} /> Connect your storage to upload — set it up in Settings →
+                    </a>
+                  )}
                   {videoUrlInput.includes('Uploading') && (
                     <p className="text-[11px] font-bold text-amber-600 italic mb-2">Keep this tab visible until the upload completes.</p>
                   )}
                   <input
                     type="file"
                     accept="video/*"
+                    disabled={storageReady === false}
                     onChange={async (e) => {
                        const file = e.target.files?.[0];
                        if (!file) return;

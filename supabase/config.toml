@@ -69,3 +69,6 @@ verify_jwt = true
 
 [functions.r2-multipart-upload]
 verify_jwt = true
+
+[functions.storage-credentials]
+verify_jwt = true

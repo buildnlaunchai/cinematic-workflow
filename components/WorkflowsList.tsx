@@ -4,13 +4,14 @@ import React, { useState, useEffect } from 'react'
 import { listWorkflows, createWorkflow, deleteWorkflow } from '@/lib/actions/workflows'
 import { Card, Modal, ConfirmDialog } from '@/components/ui'
 import type { CinematicWorkflow } from '@/types'
-import { Plus, Video, Clock, ArrowRight, Loader2, PlayCircle, Film, Trash2 } from 'lucide-react'
+import { Plus, Video, Clock, ArrowRight, Loader2, PlayCircle, Film, Trash2, HardDrive, AlertTriangle } from 'lucide-react'
 
 interface Props {
   onSelectWorkflow: (workflowId: string) => void
+  storageReady?: boolean | null
 }
 
-export const WorkflowsList: React.FC<Props> = ({ onSelectWorkflow }) => {
+export const WorkflowsList: React.FC<Props> = ({ onSelectWorkflow, storageReady }) => {
   const [workflows, setWorkflows] = useState<CinematicWorkflow[]>([])
   const [loading, setLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
@@ -81,13 +82,36 @@ export const WorkflowsList: React.FC<Props> = ({ onSelectWorkflow }) => {
           </h1>
           <p className="text-sm font-bold text-gray-400 mt-2 tracking-widest uppercase">Standalone Video Review Workspaces</p>
         </div>
-        <button
-          onClick={() => setIsCreating(true)}
-          className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black uppercase text-[13px] tracking-widest hover:bg-indigo-700 transition-all shadow-lg hover:shadow-indigo-500/25 flex items-center gap-2 active:scale-95"
-        >
-          <Plus size={16} /> New Workflow
-        </button>
+        <div className="flex items-center gap-3">
+          <a
+            href="/settings/storage"
+            className="inline-flex items-center gap-2 rounded-xl border border-gray-200 dark:border-slate-700 px-4 py-3 text-[13px] font-black uppercase tracking-widest text-gray-500 dark:text-slate-300 hover:border-sky-400 hover:text-sky-500 transition-all"
+            title="Connect your storage"
+          >
+            <HardDrive size={16} /> Storage
+          </a>
+          <button
+            onClick={() => setIsCreating(true)}
+            className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black uppercase text-[13px] tracking-widest hover:bg-indigo-700 transition-all shadow-lg hover:shadow-indigo-500/25 flex items-center gap-2 active:scale-95"
+          >
+            <Plus size={16} /> New Workflow
+          </button>
+        </div>
       </div>
+
+      {storageReady === false && (
+        <a
+          href="/settings/storage"
+          className="mb-6 flex items-center gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-5 py-4 text-sm text-amber-700 dark:text-amber-300 hover:bg-amber-500/15 transition-colors"
+        >
+          <AlertTriangle size={18} className="shrink-0" />
+          <span>
+            <b>Connect your storage to upload video.</b> Cinematic uploads footage to your own Cloudflare R2
+            bucket — set it up once to start adding versions. Click to connect.
+          </span>
+          <ArrowRight size={16} className="ml-auto shrink-0" />
+        </a>
+      )}
 
       {workflows.length === 0 ? (
         <div className="bg-white dark:bg-slate-800 border border-dashed border-gray-300 dark:border-slate-800 rounded-3xl p-16 text-center shadow-sm">

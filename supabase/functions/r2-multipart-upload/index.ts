@@ -1,21 +1,13 @@
-// r2-multipart-upload — S3-compatible multipart upload to Cloudflare R2.
+// r2-multipart-upload — multipart upload against the CALLING USER's own R2 bucket
+// (per-user BYOK). Actions: initiate | sign-part | complete | abort.
 //
-// Used for files at/above the multipart threshold (see lib/r2/smartUpload.ts).
-// Actions: initiate | sign-part | complete | abort. The client PUTs each part
-// directly to R2 using the presigned URLs this returns, reads the ETag off each
-// part response (R2 bucket CORS MUST expose ETag — see .env.example), and sends
-// the ETags back on `complete`.
-//
-// All config comes from Edge Function secrets (Deno.env) — nothing is hardcoded:
-//   R2_ENDPOINT, R2_ACCESS_KEY, R2_SECRET_KEY, R2_BUCKET  — the bucket + creds
-//   R2_PUBLIC_URL_BASE                                    — public URL objects serve from
-//   ALLOWED_ORIGIN (optional, defaults to "*")            — CORS origin
-//
-// Auth: verify_jwt = true is enforced by the platform (see supabase/config.toml).
+// Rewired from the shared-env-secret version: R2 config comes from the caller's
+// decrypted credentials (_shared/user-r2.ts), not R2_* env. The client PUTs each
+// part directly to R2 with the presigned URLs this returns, reads the ETag off
+// each part (bucket CORS MUST expose ETag), and sends the ETags back on complete.
+// Called by the app's server actions only.
 
-import { serve } from "https://deno.land/std/http/server.ts";
 import {
-  S3Client,
   CreateMultipartUploadCommand,
   UploadPartCommand,
   CompleteMultipartUploadCommand,
@@ -23,166 +15,109 @@ import {
 } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
-const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") ?? "*";
+import { resolveProfileId, serviceClient } from "../_shared/identity.ts";
+import { loadUserR2, StorageError } from "../_shared/user-r2.ts";
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Origin": Deno.env.get("ALLOWED_ORIGIN") ?? "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-function getR2() {
-  const endpoint = Deno.env.get("R2_ENDPOINT");
-  const accessKey = Deno.env.get("R2_ACCESS_KEY");
-  const secretKey = Deno.env.get("R2_SECRET_KEY");
-  const bucket = Deno.env.get("R2_BUCKET");
-  const publicUrlBase = Deno.env.get("R2_PUBLIC_URL_BASE");
-
-  if (!endpoint || !accessKey || !secretKey || !bucket || !publicUrlBase) {
-    throw new Error("R2 environment variables missing");
-  }
-
-  const client = new S3Client({
-    region: "auto",
-    endpoint,
-    forcePathStyle: true,
-    credentials: {
-      accessKeyId: accessKey,
-      secretAccessKey: secretKey,
-    },
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "content-type": "application/json" },
   });
-
-  return { client, bucket, publicUrlBase: publicUrlBase.replace(/\/+$/, "") };
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+
+  const supabase = serviceClient();
+
+  let body: {
+    action?: string;
+    user_id?: unknown;
+    fileName?: unknown;
+    key?: unknown;
+    uploadId?: unknown;
+    partNumber?: unknown;
+    parts?: unknown;
+  };
   try {
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { headers: corsHeaders });
-    }
+    body = await req.json();
+  } catch {
+    return json({ error: "bad request" }, 400);
+  }
 
-    const authHeader = req.headers.get("authorization");
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized: missing token" }),
-        { status: 401, headers: corsHeaders },
-      );
-    }
+  const userId = await resolveProfileId(supabase, req.headers.get("Authorization") ?? "", body);
+  if (!userId) return json({ error: "not authenticated" }, 401);
 
-    if (req.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Method not allowed" }), {
-        status: 405,
-        headers: corsHeaders,
-      });
-    }
-
-    const body = await req.json();
+  try {
+    const r2 = await loadUserR2(supabase, userId); // throws StorageError (named) if not connected
     const { action } = body;
-    const { client, bucket, publicUrlBase } = getR2();
 
     if (action === "initiate") {
-      const { fileName } = body;
-      if (!fileName) {
-        return new Response(JSON.stringify({ error: "Invalid request body" }), {
-          status: 400,
-          headers: corsHeaders,
-        });
-      }
-
-      const safeFileName = String(fileName).replace(/[^a-zA-Z0-9.\-_]/g, "_");
-      const key = `uploads/${crypto.randomUUID()}-${safeFileName}`;
-
-      const out = await client.send(
-        new CreateMultipartUploadCommand({ Bucket: bucket, Key: key }),
+      const fileName = String(body.fileName ?? "");
+      if (!fileName) return json({ error: "fileName is required" }, 400);
+      const safe = fileName.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+      const key = `uploads/${crypto.randomUUID()}-${safe}`;
+      const out = await r2.client.send(
+        new CreateMultipartUploadCommand({ Bucket: r2.bucket, Key: key }),
       );
-
-      return new Response(
-        JSON.stringify({
-          key,
-          uploadId: out.UploadId,
-          publicUrl: `${publicUrlBase}/${key}`,
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+      return json({ key, uploadId: out.UploadId, publicUrl: `${r2.publicBase}/${key}` });
     }
 
     if (action === "sign-part") {
-      const { key, uploadId, partNumber } = body;
-      if (!key || !uploadId || !partNumber) {
-        return new Response(JSON.stringify({ error: "Invalid request body" }), {
-          status: 400,
-          headers: corsHeaders,
-        });
-      }
-
-      const command = new UploadPartCommand({
-        Bucket: bucket,
-        Key: key,
-        UploadId: uploadId,
-        PartNumber: partNumber,
-      });
-      const signedUrl = await getSignedUrl(client, command, { expiresIn: 3600 });
-
-      return new Response(JSON.stringify({ signedUrl }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      const key = String(body.key ?? "");
+      const uploadId = String(body.uploadId ?? "");
+      const partNumber = Number(body.partNumber);
+      if (!key || !uploadId || !partNumber) return json({ error: "Invalid request body" }, 400);
+      const signedUrl = await getSignedUrl(
+        r2.client,
+        new UploadPartCommand({ Bucket: r2.bucket, Key: key, UploadId: uploadId, PartNumber: partNumber }),
+        { expiresIn: 3600 },
+      );
+      return json({ signedUrl });
     }
 
     if (action === "complete") {
-      const { key, uploadId, parts } = body;
+      const key = String(body.key ?? "");
+      const uploadId = String(body.uploadId ?? "");
+      const parts = body.parts;
       if (!key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
-        return new Response(JSON.stringify({ error: "Invalid request body" }), {
-          status: 400,
-          headers: corsHeaders,
-        });
+        return json({ error: "Invalid request body" }, 400);
       }
-
-      const sortedParts = [...parts]
+      const sortedParts = [...(parts as { partNumber: number; eTag: string }[])]
         .sort((a, b) => a.partNumber - b.partNumber)
         .map((p) => ({ PartNumber: p.partNumber, ETag: p.eTag }));
-
-      await client.send(
+      await r2.client.send(
         new CompleteMultipartUploadCommand({
-          Bucket: bucket,
+          Bucket: r2.bucket,
           Key: key,
           UploadId: uploadId,
           MultipartUpload: { Parts: sortedParts },
         }),
       );
-
-      return new Response(
-        JSON.stringify({ publicUrl: `${publicUrlBase}/${key}` }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+      return json({ publicUrl: `${r2.publicBase}/${key}` });
     }
 
     if (action === "abort") {
-      const { key, uploadId } = body;
-      if (!key || !uploadId) {
-        return new Response(JSON.stringify({ error: "Invalid request body" }), {
-          status: 400,
-          headers: corsHeaders,
-        });
-      }
-
-      await client.send(
-        new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }),
+      const key = String(body.key ?? "");
+      const uploadId = String(body.uploadId ?? "");
+      if (!key || !uploadId) return json({ error: "Invalid request body" }, 400);
+      await r2.client.send(
+        new AbortMultipartUploadCommand({ Bucket: r2.bucket, Key: key, UploadId: uploadId }),
       );
-
-      return new Response(JSON.stringify({ ok: true }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return json({ ok: true });
     }
 
-    return new Response(JSON.stringify({ error: "Unknown action" }), {
-      status: 400,
-      headers: corsHeaders,
-    });
+    return json({ error: "unknown action" }, 400);
   } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    if (err instanceof StorageError) return json({ error: err.message, code: err.code }, 400);
+    console.error("r2-multipart-upload error:", (err as Error).message);
+    return json({ error: "Something went wrong with the multipart upload." }, 500);
   }
 });

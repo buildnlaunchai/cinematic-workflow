@@ -21,7 +21,7 @@ import {
  * projection. `/login` and `/locked` are their own concern.
  */
 function isProtectedPath(pathname: string): boolean {
-  return pathname === '/'
+  return pathname === '/' || pathname.startsWith('/settings')
 }
 
 // ---------------------------------------------------------------------------

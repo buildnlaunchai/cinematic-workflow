@@ -80,3 +80,28 @@ export interface SharedWorkflowPayload {
   nodes: { id: string; video_url: string; created_at: string }[]
   comments: SharedComment[]
 }
+
+// ---- Per-user BYOK R2 storage ------------------------------------------------
+
+export type StorageConnStatus = 'unverified' | 'valid' | 'invalid'
+
+/** The client-readable status of a user's connected R2 storage (never secrets). */
+export interface StorageStatus {
+  connected: boolean
+  status: StorageConnStatus | null
+  r2_endpoint: string | null
+  r2_bucket: string | null
+  r2_public_url_base: string | null
+  access_key_hint: string | null
+  last_error: string | null
+  last_verified_at: string | null
+}
+
+/** What the settings wizard submits. The two keys are plaintext in transit only. */
+export interface StorageCredentialsInput {
+  r2_endpoint: string
+  r2_bucket: string
+  r2_public_url_base: string
+  access_key_id: string
+  secret_key: string
+}

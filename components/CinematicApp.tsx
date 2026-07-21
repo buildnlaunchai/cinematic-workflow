@@ -1,7 +1,8 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { getWorkflow } from '@/lib/actions/workspace'
+import { getMyStorageStatus } from '@/lib/actions/storage'
 import type { User, CinematicWorkflow } from '@/types'
 import { WorkflowsList } from '@/components/WorkflowsList'
 import { Workspace } from '@/components/Workspace'
@@ -14,6 +15,16 @@ interface Props {
 export const CinematicApp: React.FC<Props> = ({ user }) => {
   const [activeWorkflow, setActiveWorkflow] = useState<CinematicWorkflow | null>(null)
   const [loadingId, setLoadingId] = useState<string | null>(null)
+  // null = still checking; true = a verified R2 bucket is connected; false = not.
+  const [storageReady, setStorageReady] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    getMyStorageStatus()
+      .then((s) => { if (alive) setStorageReady(s.status === 'valid') })
+      .catch(() => { if (alive) setStorageReady(false) })
+    return () => { alive = false }
+  }, [])
 
   const handleSelectWorkflow = async (id: string) => {
     setLoadingId(id)
@@ -43,9 +54,10 @@ export const CinematicApp: React.FC<Props> = ({ user }) => {
         user={user}
         workflow={activeWorkflow}
         onBackList={() => setActiveWorkflow(null)}
+        storageReady={storageReady}
       />
     )
   }
 
-  return <WorkflowsList onSelectWorkflow={handleSelectWorkflow} />
+  return <WorkflowsList onSelectWorkflow={handleSelectWorkflow} storageReady={storageReady} />
 }

@@ -153,7 +153,11 @@ head_ '4. No hardcoded hosts outside the allowlist'
 # (getStreamUrl in components/Workspace.tsx). These are third-party consumer
 # services with stable public hostnames, not configurable infrastructure — there
 # is nothing to move into an env var. Drop them here only if that feature is cut.
-ALLOWED_HOSTS='localhost|127\.0\.0\.1|drive\.google\.com|www\.dropbox\.com|dl\.dropboxusercontent\.com'
+#
+# dash.cloudflare.com: the storage-settings wizard (components/StorageWizard.tsx)
+# links the user to the Cloudflare console to create their R2 bucket + API token.
+# It's a documentation link to a fixed dashboard, not configurable infrastructure.
+ALLOWED_HOSTS='localhost|127\.0\.0\.1|drive\.google\.com|www\.dropbox\.com|dl\.dropboxusercontent\.com|dash\.cloudflare\.com'
 
 BAD_HOSTS=$(code_files | xargs grep -IoE 'https?://[A-Za-z0-9._-]+' 2>/dev/null \
             | sed 's|.*https\{0,1\}://||' \
