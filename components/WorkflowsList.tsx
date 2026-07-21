@@ -1,19 +1,16 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { listWorkflows, createWorkflow, deleteWorkflow } from '@/lib/actions/workflows'
 import { Card, Modal, ConfirmDialog } from '@/components/ui'
-import type { User, CinematicWorkflow } from '@/types'
+import type { CinematicWorkflow } from '@/types'
 import { Plus, Video, Clock, ArrowRight, Loader2, PlayCircle, Film, Trash2 } from 'lucide-react'
 
-const supabase = createClient()
-
 interface Props {
-  user: User
   onSelectWorkflow: (workflowId: string) => void
 }
 
-export const WorkflowsList: React.FC<Props> = ({ user, onSelectWorkflow }) => {
+export const WorkflowsList: React.FC<Props> = ({ onSelectWorkflow }) => {
   const [workflows, setWorkflows] = useState<CinematicWorkflow[]>([])
   const [loading, setLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
@@ -28,28 +25,21 @@ export const WorkflowsList: React.FC<Props> = ({ user, onSelectWorkflow }) => {
 
   const fetchWorkflows = async () => {
     setLoading(true)
-    let workflowsData: CinematicWorkflow[] = []
-
-    const { data, error } = await supabase
-      .from('workflows')
-      .select('*')
-      .order('created_at', { ascending: false })
-    if (!error && data) workflowsData = data as any
-
-    setWorkflows(workflowsData)
-    setLoading(false)
+    try {
+      setWorkflows(await listWorkflows())
+    } catch (err: any) {
+      console.error('Failed to load workflows:', err?.message ?? err)
+      setWorkflows([])
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handleCreate = async () => {
     if (!newTitle.trim()) return
     setIsSubmitting(true)
     try {
-      const { data, error } = await supabase
-        .from('workflows')
-        .insert({ title: newTitle.trim(), created_by: user.id })
-        .select()
-        .single()
-      if (error) throw error
+      await createWorkflow(newTitle)
       setNewTitle('')
       setIsCreating(false)
       fetchWorkflows()
@@ -64,12 +54,7 @@ export const WorkflowsList: React.FC<Props> = ({ user, onSelectWorkflow }) => {
     if (!workflowToDelete) return
     setIsDeleting(true)
     try {
-      const { error } = await supabase
-        .from('workflows')
-        .delete()
-        .eq('id', workflowToDelete)
-
-      if (error) throw error
+      await deleteWorkflow(workflowToDelete)
       setWorkflows(prev => prev.filter(w => w.id !== workflowToDelete))
     } catch (err: any) {
       alert('Failed to delete workflow: ' + err.message)

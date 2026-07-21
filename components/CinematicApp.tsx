@@ -47,5 +47,5 @@ export const CinematicApp: React.FC<Props> = ({ user }) => {
     )
   }
 
-  return <WorkflowsList user={user} onSelectWorkflow={handleSelectWorkflow} />
+  return <WorkflowsList onSelectWorkflow={handleSelectWorkflow} />
 }
