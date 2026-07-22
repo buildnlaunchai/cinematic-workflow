@@ -26,9 +26,12 @@ export type RequestAuth =
   | { ok: true; mode: AppMode; user: AppUser }
   | { ok: false; mode: AppMode; reason: 'missing' | 'invalid' | 'not-granted' | 'unauthenticated' }
 
-export async function getRequestUser(): Promise<RequestAuth> {
+export async function getRequestUser(overrideToken?: string): Promise<RequestAuth> {
   if (APP_MODE === 'embedded') {
-    const token = (await cookies()).get(HUB_TOKEN_COOKIE)?.value
+    // overrideToken is the doorway query token, passed on the entry request when
+    // the cookie middleware just set is not yet readable in this same request. It
+    // is re-verified below exactly like the cookie — never trusted unverified.
+    const token = overrideToken ?? (await cookies()).get(HUB_TOKEN_COOKIE)?.value
     if (!token) return { ok: false, mode: 'embedded', reason: 'missing' }
 
     const result = await verifyHubToken(token)

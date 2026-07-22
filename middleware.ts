@@ -37,15 +37,22 @@ async function embeddedMiddleware(req: NextRequest): Promise<NextResponse> {
   if (queryToken) {
     const result = await verifyHubToken(queryToken)
 
-    const clean = url.clone()
-    clean.searchParams.delete(HUB_TOKEN_QUERY_PARAM)
-
     if (!result.ok) {
+      // Invalid token: strip it from the URL and set NO cookie. The clean request
+      // lands on the cookie-less path below → Locked. (Unchanged error path.)
       console.warn(`[hub] rejected token from query: ${result.reason}`)
+      const clean = url.clone()
+      clean.searchParams.delete(HUB_TOKEN_QUERY_PARAM)
       return NextResponse.redirect(clean)
     }
 
-    const res = NextResponse.redirect(clean)
+    // Valid: set the cookie for every later request AND let THIS request render
+    // the app in place — no redirect, one fewer full navigation on entry. The page
+    // resolves identity from the query token (the cookie just set is not readable
+    // within this same request) and re-verifies it before rendering any protected
+    // content; a client effect then replaceState's the token out of the URL.
+    // Subsequent requests carry the cookie and take the normal path below.
+    const res = NextResponse.next()
     res.cookies.set(HUB_TOKEN_COOKIE, queryToken, hubCookieOptions(secure))
     return res
   }

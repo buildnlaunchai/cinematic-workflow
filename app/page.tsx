@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 
 import { getRequestUser } from '@/lib/session'
 import { CinematicApp } from '@/components/CinematicApp'
+import { CleanHubTokenUrl } from '@/components/CleanHubTokenUrl'
 import { Locked } from '@/components/Locked'
 
 /**
@@ -19,8 +20,20 @@ export const dynamic = 'force-dynamic'
 // the Edge isolate's cold compile heavy, and Edge also runs near the user rather
 // than pinned to sin1 (losing the DB co-location from vercel.json). Kept on Node.
 
-export default async function Page() {
-  const auth = await getRequestUser()
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ hub_token?: string | string[] }>
+}) {
+  // Embedded doorway: on the entry request (/?hub_token=…) middleware verified the
+  // token and set the cookie, but that cookie is NOT readable within this same
+  // request — so resolve identity from the query token instead. getRequestUser
+  // re-verifies it (signature + aud + exp + claims) before any protected content
+  // renders. Every later request has no query token and reads the cookie.
+  const sp = await searchParams
+  const doorwayToken = typeof sp.hub_token === 'string' ? sp.hub_token : undefined
+
+  const auth = await getRequestUser(doorwayToken)
 
   if (!auth.ok) {
     // Standalone with no session → the app's own login. Embedded → a locked
@@ -29,5 +42,12 @@ export default async function Page() {
     return <Locked reason={auth.reason} />
   }
 
-  return <CinematicApp user={auth.user} />
+  // CleanHubTokenUrl strips ?hub_token from the URL client-side, AFTER this
+  // server-verified content is rendered — cosmetic only, never a content gate.
+  return (
+    <>
+      <CleanHubTokenUrl />
+      <CinematicApp user={auth.user} />
+    </>
+  )
 }
