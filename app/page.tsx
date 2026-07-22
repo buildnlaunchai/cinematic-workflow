@@ -14,11 +14,10 @@ import { Locked } from '@/components/Locked'
  * and this page (and everything it renders) reads and writes the database.
  */
 export const dynamic = 'force-dynamic'
-// Edge runtime: this entry path is Edge-clean (jose, supabase-js/ssr, the
-// service-role admin client, next/headers cookies — all Web-API based). Edge
-// cold-starts in tens of ms vs ~2s for Node, which is fix #2 of the embedded
-// load profiling.
-export const runtime = 'edge'
+// Node runtime (default). Edge was tried and MEASURED WORSE for cold start here
+// (~4s cold vs ~1.8s on Node): supabase-js + jose + the SSR'd component tree make
+// the Edge isolate's cold compile heavy, and Edge also runs near the user rather
+// than pinned to sin1 (losing the DB co-location from vercel.json). Kept on Node.
 
 export default async function Page() {
   const auth = await getRequestUser()
